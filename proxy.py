@@ -11,9 +11,10 @@ back to the client (more efficient when fetching large payloads.)
 
 
 import requests
-
-from flask import request, Response
+from flask import Flask, Response, request
 from werkzeug.exceptions import HTTPException
+
+app = Flask(__name__)
 
 
 class APIRequestProxyError(Exception):
@@ -216,3 +217,19 @@ class APIRequestProxy:
         return __class__.__name__
 
     __repr__ = __str__
+
+
+@app.route('/proxy/', methods=['POST'])
+def flask_restful_proxy():
+    proxy_request = request.json.get('proxy_request')
+    proxy = APIRequestProxy(proxy_request=proxy_request)
+    return proxy.stream_response()
+
+
+if __name__ == '__main__':
+    app.run(
+        host='0.0.0.0',
+        port=5100,
+        debug=True,
+        threaded=True,
+    )
