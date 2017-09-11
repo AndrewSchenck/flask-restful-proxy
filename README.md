@@ -1,17 +1,17 @@
 # flask-restful-proxy
-A slightly more feature-full HTTP Proxy using Flask and Requests
+A slightly more feature-full HTTP Proxy using Flask and Requests.
 
 I've seen some patterns out there for doing request proxying
 through flask, but my use-case required something a little
 bit more complicated, and this is what I've come up with.
 
-All HTTP verbs are supported, and an optional JSON payload can be
-included, to be passed to the upstream request.
+Most HTTP verbs are supported, and an optional JSON payload
+can be included, to be passed to the upstream request.
 
 The APIRequestProxy object takes a simple dictionary which
-describes a proxy requext, instantiates the
-APIRequestProxyUpstream object to create the upstream request,
-and provides the results as a Flask Response object two ways.
+describes a proxy requext, instantiates the upstream object to
+create the upstream request, and provides the results as a
+Flask Response object.
 
 The status code is set to the result from the upstream request by
 default, but this behavior can be disabled by including
@@ -19,6 +19,12 @@ default, but this behavior can be disabled by including
 
 The response can be stored as an attribute or streamed directly
 back to the client (more efficient when fetching large payloads.)
+
+I'm using this behind a REST API, permitting clients to POST
+a dictionary describing their proxy request, and passing that
+dictionary into APIRequestProxy (see below.) I recommend putting
+thought into possible attack vectors / request validation before
+implementing this code.
 
 
 Usage Example 1:

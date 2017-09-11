@@ -4,46 +4,9 @@ This module contains objects for providing a RESTful proxy service.
 This is meant to be called from inside a Flask instance, to provide
 upstream HTTP service to clients.
 
-All HTTP verbs are supported, and an optional JSON payload can be
-included, to be passed to the upstream request.
-
-The APIRequestProxy object takes a simple dictionary which describes
-a proxy requext, instantiates the APIRequestProxyUpstream object to
-create the upstream request, and provides the results as a Flask
-Response object two ways.
-
-The status code is set to the result from the upstream request by
-default, but this behavior can be disabled by including
-'disable_status_passthrough=True' in the proxy_request dictionary.
-
 The response can be stored as an attribute or streamed directly
 back to the client (more efficient when fetching large payloads.)
 
-
-Usage Example 1:
-
-    proxy_request = {
-        'url': 'http://www.google.com',
-        'method': 'GET',
-    }
-    proxy = APIRequestProxy()
-    proxy.proxy_request = proxy_request
-    print(proxy.stream_response())
-
-Usage Example 2:
-    proxy_request = {
-        'url': 'http://www.my-api-somewhere.com',
-        'method': 'POST',
-        'disable_status_passthrough': True,
-    }
-    payload = {
-        'some_resource': {...}
-    }
-    proxy = APIRequestProxy()
-    proxy.proxy_request = proxy_request
-    proxy.payload = payload
-    proxy.make_response()
-    return proxy.response
 """
 
 
@@ -141,12 +104,14 @@ class APIRequestProxy:
     upstream request.
     """
 
-    def __init__(self):
+    def __init__(self, proxy_request=None, payload=None):
         self._proxy_request = None
         self._payload = None
         self.response = None
         self.status_passthrough = True
         self.upstream = APIRequestProxyUpstream()
+        self.proxy_request = proxy_request
+        self.payload = payload
 
     @property
     def proxy_request(self) -> dict:
