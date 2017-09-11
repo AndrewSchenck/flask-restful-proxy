@@ -7,31 +7,6 @@ upstream HTTP service to clients.
 The response can be stored as an attribute or streamed directly
 back to the client (more efficient when fetching large payloads.)
 
-
-Usage Example 1:
-
-    proxy_request = {
-        'url': 'http://www.google.com',
-        'method': 'GET',
-    }
-    proxy = APIRequestProxy()
-    proxy.proxy_request = proxy_request
-    print(proxy.stream_response())
-
-Usage Example 2:
-    proxy_request = {
-        'url': 'http://www.my-api-somewhere.com',
-        'method': 'POST',
-        'disable_status_passthrough': True,
-    }
-    payload = {
-        'some_resource': {...}
-    }
-    proxy = APIRequestProxy()
-    proxy.proxy_request = proxy_request
-    proxy.payload = payload
-    proxy.make_response()
-    return proxy.response
 """
 
 
