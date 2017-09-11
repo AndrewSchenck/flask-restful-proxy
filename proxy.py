@@ -104,12 +104,14 @@ class APIRequestProxy:
     upstream request.
     """
 
-    def __init__(self):
+    def __init__(self, proxy_request=None, payload=None):
         self._proxy_request = None
         self._payload = None
         self.response = None
         self.status_passthrough = True
         self.upstream = APIRequestProxyUpstream()
+        self.proxy_request = proxy_request
+        self.payload = payload
 
     @property
     def proxy_request(self) -> dict:

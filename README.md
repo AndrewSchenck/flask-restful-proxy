@@ -9,9 +9,9 @@ Most HTTP verbs are supported, and an optional JSON payload
 can be included, to be passed to the upstream request.
 
 The APIRequestProxy object takes a simple dictionary which
-describes a proxy requext, instantiates the
-APIRequestProxyUpstream object to create the upstream request,
-and provides the results as a Flask Response object two ways.
+describes a proxy requext, instantiates the upstream object to
+create the upstream request, and provides the results as a
+Flask Response object.
 
 The status code is set to the result from the upstream request by
 default, but this behavior can be disabled by including
