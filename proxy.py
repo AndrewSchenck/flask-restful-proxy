@@ -78,8 +78,6 @@ class APIRequestProxyUpstream:
 
         :param value: The HTTP request method
         :type value: str
-        :return: None
-        :rtype: None
         """
         request_methods = {
             'DELETE':   requests.delete,
@@ -102,6 +100,8 @@ class APIRequestProxyUpstream:
 
         :param stream: Set to True to use streaming mode
         :type stream: bool
+        :return: Response from upstream host
+        :rtype: requests.Response
         """
         try:
             return self.request_method(
