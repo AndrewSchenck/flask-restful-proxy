@@ -1,8 +1,8 @@
 # flask-restful-proxy
-A slightly more feature-full HTTP Proxy using Flask and Requests.
+A caching / streaming HTTP Proxy using Flask and Requests.
 
 I've seen some patterns out there for doing request proxying
-through flask, but my use-case required something a little
+through Flask, but my use-case required something a little
 bit more complicated, and this is what I've come up with.
 
 The APIRequestProxy object takes a simple dictionary which
@@ -25,10 +25,8 @@ default, but this behavior can be disabled by including
 The response can be stored as an attribute or streamed directly
 back to the client (more efficient when fetching large payloads.)
 
-I'm using this behind a REST API, permitting clients to POST
-a dictionary describing their proxy request (see below.) I
-recommend putting thought into possible attack vectors / request
-validation before implementing this code.
+I recommend putting careful thought into possible attack vectors
+and input validation before implementing this code.
 
 
 Usage Example 1:

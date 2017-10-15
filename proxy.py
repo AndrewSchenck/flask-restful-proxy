@@ -11,17 +11,17 @@ Response object in one of two ways.
 Caching is supported for a limited set of HTTP verbs. The status code
 is set to 203 for a cache hit, or passes on the result from the
 upstream request for a cache miss. This behavior can be changed by
-setting disable_status_passthrough=True, but that's probably something
-you'd want to do in very limited circumstances.
+setting 'disable_status_passthrough=True, but that's probably
+something you'd want to do in very limited circumstances.
 
 """
 
 
 import requests
-import time
 
 from collections import defaultdict
 from copy import deepcopy
+from time import time
 
 from flask import Flask, Response, request
 from werkzeug.exceptions import HTTPException
@@ -29,6 +29,8 @@ from werkzeug.exceptions import HTTPException
 
 PROXY_DEFAULT_CACHE_AGE = 5
 PROXY_DEFAULT_CHUNK_SIZE = 16384
+CACHEABLE_METHODS = frozenset(('HEAD', 'GET'))
+CACHEABLE_STATUS_CODES = frozenset((200, 201, 202, 204))
 
 
 app = Flask(__name__)
@@ -54,12 +56,10 @@ class APIRequestProxyUpstream:
 
     def __init__(self):
         self._method = None
-        self.request = None
         self.url = None
-        self.headers = None
+        self.headers = {}
         self.payload = None
         self.request_method = None
-        self.response = None
 
     @property
     def method(self) -> str:
@@ -92,12 +92,11 @@ class APIRequestProxyUpstream:
         }
         try:
             self.request_method = request_methods[value]
+            self._method = value
         except KeyError:
             raise APIRequestProxyError('Unsupported Method {}'.format(self.request_method))
 
-        self._method = value
-
-    def make_request(self, stream=False) -> requests.Request:
+    def make_request(self, stream=False) -> requests.Response:
         """
         Return the upstream request
 
@@ -122,24 +121,25 @@ class APIRequestProxyUpstream:
 
 class APIRequestProxy:
     """
-    This object handles the direction of proxy requests.
-    It will instantiate the APIRequestProxyUpstream object,
-    direct it to fetch the upstream request, and return
-    the results to the application. It supports optional
-    JSON payload and headers, which are passed on to the
-    upstream request.
+    This object handles the direction of proxy requests. It will
+    instantiate the APIRequestProxyUpstream object, direct it to
+    fetch the upstream request, and return the results to the
+    application. It supports optional JSON payload and headers,
+    which are passed on to the upstream request.
     """
 
     proxy_request_cache = None
-    cacheable_methods = frozenset(('HEAD', 'GET'))
+    upstream = None
 
     def __new__(cls, *args, **kwargs):
         """
-        Initialize our cache dictionary upon first object
-        instantiation
+        Initialize the cache dictionary and the upstream response
+        object upon first instantiation
         """
         if not cls.proxy_request_cache:
             cls.initialize_cache()
+        if not cls.upstream:
+            cls.upstream = APIRequestProxyUpstream()
         return super().__new__(cls)
 
     @classmethod
@@ -151,10 +151,10 @@ class APIRequestProxy:
 
     def __init__(self):
         self.response = None
-        self.upstream = None
         self._enable_cache = None
         self._cache_age = None
         self._proxy_request = None
+        self.headers = {'Content-Type': request.content_type}
 
     @property
     def headers(self) -> dict:
@@ -179,8 +179,8 @@ class APIRequestProxy:
         """
         try:
             if self.upstream:
-                self.upstream.headers = value
-        except AttributeError as e:
+                self.upstream.headers.update(value)
+        except (TypeError, AttributeError) as e:
             raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     @property
@@ -259,8 +259,6 @@ class APIRequestProxy:
         :param value: Request payload data
         :type value: dict
         """
-        if not self.upstream:
-            self.upstream = APIRequestProxyUpstream()
         try:
             self.upstream.payload = value.get('data')
             self.proxy_request = value['meta']['proxy_request']
@@ -285,7 +283,7 @@ class APIRequestProxy:
         :param value: enable_cache
         :type value: bool
         """
-        self._enable_cache = value if self.method in self.cacheable_methods else False
+        self._enable_cache = value if self.method in CACHEABLE_METHODS else False
 
     @property
     def cache_age(self) -> int:
@@ -314,7 +312,6 @@ class APIRequestProxy:
         """
         A dictionary describing the upstream request to proxy
 
-
         :return:
         :rtype:
         :return: Request to proxy
@@ -330,25 +327,20 @@ class APIRequestProxy:
         :param value: Request to proxy
         :type value: dict
         """
-        upstream_headers = {'Content-Type': request.content_type}
-
         try:
-            if 'headers' in value:
-                upstream_headers.update(value['headers'])
-            self.headers = upstream_headers
-
             self.method = value['method']
             self.url = value['url']
 
+            self.headers = value.get('headers', {})
             self.enable_cache = value.get('enable_cache', False)
             self.cache_age = value.get('cache_age', PROXY_DEFAULT_CACHE_AGE)
 
-            if value.get('invalidate_current_cache'):
+            if value.get('initialize_cache'):
                 self.initialize_cache()
 
             self._proxy_request = value
 
-        except (KeyError, TypeError) as e:
+        except (KeyError, TypeError, AttributeError) as e:
             raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     @property
@@ -368,7 +360,8 @@ class APIRequestProxy:
         from the upstream, we set the status code ourselves (only
         applies to 2XX codes)
 
-        :return: True to set status, False to pass on the 'real' status
+        :return: True to set status, False to pass on the 'real'
+                 status
         :rtype: bool
         """
         return not self.proxy_request.get('disable_status_passthrough')
@@ -380,15 +373,15 @@ class APIRequestProxy:
         :return: Response from upstream
         :rtype: Response
         """
-        upstream_request = self.upstream.make_request()
         try:
+            upstream_request = self.upstream.make_request()
             response = Response(
                 response=upstream_request.content,
                 content_type=upstream_request.headers.get('Content-Type'),
                 status=upstream_request.status_code if self.status_passthrough else 203,
             )
             return response
-        except HTTPException as e:
+        except (HTTPException, AttributeError) as e:
             raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     def response_from_cache(self) -> Response:
@@ -400,17 +393,17 @@ class APIRequestProxy:
         :rtype: Response
         """
         try:
-            if time.time() < self.proxy_request_cache[self.method][self.url]['expire']:
+            if time() < self.proxy_request_cache[self.method][self.url]['expire']:
                 response = deepcopy(self.proxy_request_cache[self.method][self.url]['response'])
                 response.status_code = 203
             else:
-                raise CacheMiss('Object not in cache or cache expired')
+                raise CacheMiss('Object expired from cache')
         except (KeyError, CacheMiss):
             response = self.response_from_upstream()
-            if response.status_code in (200, 201, 202, 204):
+            if response.status_code in CACHEABLE_STATUS_CODES:
                 self.proxy_request_cache[self.method][self.url] = {
                     'response': response,
-                    'expire':   time.time() + self.cache_age,
+                    'expire':   time() + self.cache_age,
                 }
         return response
 
@@ -427,8 +420,8 @@ class APIRequestProxy:
     def stream_response(self) -> Response:
         """
         Streaming mode -- stream the upstream request through to the
-        client using an iterator, enabling efficient fetching of larger
-        payloads
+        client using an iterator, enabling efficient fetching of
+        larger payloads
 
         :return: The response from the upstream
         :rtype: Response
