@@ -1,24 +1,48 @@
 """
 
-This module contains objects for providing a RESTful proxy service.
-This is meant to be called from inside a Flask instance, to provide
-upstream HTTP service to clients.
+This module contains objects for providing a RESTful proxy service;
+that is, an HTTP proxy which is controlled via RESTful requests.
 
-The response can be stored as an attribute or streamed directly
-back to the client (more efficient when fetching large payloads.)
+The APIRequestProxy object takes a simple dictionary which describes
+a proxy requext, instantiates the APIRequestProxyUpstream object to
+create the upstream request, and provides the results as a Flask
+Response object in one of two ways.
+
+Caching is supported for a limited set of HTTP verbs. The status code
+is set to 203 for a cache hit, or passes on the result from the
+upstream request for a cache miss. This behavior can be changed by
+setting disable_status_passthrough=True, but that's probably something
+you'd want to do in very limited circumstances.
 
 """
 
 
 import requests
+import time
+
+from collections import defaultdict
+from copy import deepcopy
+
 from flask import Flask, Response, request
 from werkzeug.exceptions import HTTPException
+
+
+PROXY_DEFAULT_CACHE_AGE = 5
+PROXY_DEFAULT_CHUNK_SIZE = 16384
+
 
 app = Flask(__name__)
 
 
 class APIRequestProxyError(Exception):
     """Exception class for Proxy Errors"""
+    pass
+
+
+class CacheMiss(Exception):
+    """
+    There is no valid cache copy of the object
+    """
     pass
 
 
@@ -35,6 +59,7 @@ class APIRequestProxyUpstream:
         self.headers = None
         self.payload = None
         self.request_method = None
+        self.response = None
 
     @property
     def method(self) -> str:
@@ -47,7 +72,7 @@ class APIRequestProxyUpstream:
         return self._method
 
     @method.setter
-    def method(self, value) -> None:
+    def method(self, value: str) -> None:
         """
         Map the HTTP request method to the appropriate object
 
@@ -67,27 +92,27 @@ class APIRequestProxyUpstream:
         }
         try:
             self.request_method = request_methods[value]
-        except KeyError as e:
-            raise APIRequestProxyError('Unsupported Proxy Method') from e
+        except KeyError:
+            raise APIRequestProxyError('Unsupported Method {}'.format(self.request_method))
 
         self._method = value
 
-    def make_request(self, stream=False) -> None:
+    def make_request(self, stream=False) -> requests.Request:
         """
-        Form the upstream request
+        Return the upstream request
 
         :param stream: Set to True to use streaming mode
         :type stream: bool
         """
         try:
-            self.request = self.request_method(
+            return self.request_method(
                 url=self.url,
                 json=self.payload,
                 stream=stream,
                 headers=self.headers,
             )
         except requests.RequestException as e:
-            raise APIRequestProxyError('Proxy Error') from e
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     def __str__(self) -> str:
         return self.__class__.__name__
@@ -105,51 +130,111 @@ class APIRequestProxy:
     upstream request.
     """
 
-    def __init__(self, proxy_request=None, payload=None):
-        self._proxy_request = None
-        self._payload = None
+    proxy_request_cache = None
+    cacheable_methods = frozenset(('HEAD', 'GET'))
+
+    def __new__(cls, *args, **kwargs):
+        """
+        Initialize our cache dictionary upon first object
+        instantiation
+        """
+        if not cls.proxy_request_cache:
+            cls.initialize_cache()
+        return super().__new__(cls)
+
+    @classmethod
+    def initialize_cache(cls) -> None:
+        """
+        Initialize the cache dictionary
+        """
+        cls.proxy_request_cache = defaultdict(lambda: defaultdict(dict))
+
+    def __init__(self):
         self.response = None
-        self.status_passthrough = True
-        self.upstream = APIRequestProxyUpstream()
-        self.proxy_request = proxy_request
-        self.payload = payload
+        self.upstream = None
+        self._enable_cache = None
+        self._cache_age = None
+        self._proxy_request = None
 
     @property
-    def proxy_request(self) -> dict:
+    def headers(self) -> dict:
         """
-        The proxy_request field out of the payload metadata
+        The HTTP headers for the proxy request
 
-        :return: The proxy_request metadata
+        :return: HTTP headers
         :rtype: dict
         """
-        return self._proxy_request
+        try:
+            return self.upstream.headers if self.upstream else None
+        except AttributeError as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
-    @proxy_request.setter
-    def proxy_request(self, value) -> None:
+    @headers.setter
+    def headers(self, value: dict) -> None:
         """
-        As we set proxy_request, we pull some values out of it
-        and assign them to attributes inside of the upstream
-        object.
+        The HTTP headers for the proxy request
 
-        :param value: proxy_request definition
+        :param value: HTTP headers
         :type value: dict
         """
-        upstream_headers = {'Content-Type': request.content_type}
-
         try:
-            if 'headers' in value:
-                upstream_headers.update(value['headers'])
-            self.upstream.headers = upstream_headers
+            if self.upstream:
+                self.upstream.headers = value
+        except AttributeError as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
-            if value.get('disable_status_passthrough'):
-                self.status_passthrough = False
+    @property
+    def method(self) -> str:
+        """
+        The HTTP verb for the proxy request
 
-            self.upstream.method = value['method']
-            self.upstream.url = value['url']
-        except KeyError as e:
-            raise APIRequestProxyError('Proxy Error') from e
+        :return: HTTP verb
+        :rtype: str
+        """
+        try:
+            return self.upstream.method if self.upstream else None
+        except AttributeError as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
-        self._proxy_request = value
+    @method.setter
+    def method(self, value: str) -> None:
+        """
+        The HTTP verb for the proxy request
+
+        :param value: HTTP verb
+        :type value: str
+        """
+        try:
+            if self.upstream:
+                self.upstream.method = value
+        except AttributeError as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
+
+    @property
+    def url(self) -> str:
+        """
+        The URL for the proxy request
+        :return: URL
+        :rtype: str
+        """
+        try:
+            return self.upstream.url if self.upstream else None
+        except AttributeError as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
+
+    @url.setter
+    def url(self, value: str) -> None:
+        """
+        The URL for the proxy request
+
+        :param value: URL
+        :type value: str
+        """
+        try:
+            if self.upstream:
+                self.upstream.url = value
+        except AttributeError as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     @property
     def payload(self) -> dict:
@@ -160,42 +245,184 @@ class APIRequestProxy:
         :return: Request payload
         :rtype: dict
         """
-        return self.upstream.payload
+        try:
+            return self.upstream.payload if self.upstream else None
+        except AttributeError as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     @payload.setter
-    def payload(self, value) -> None:
+    def payload(self, value: dict) -> None:
         """
-        The payload is stored inside the upstream object
+        The data value of the payload is passed upstream, while
+        the meta value controls our own behavior
 
         :param value: Request payload data
         :type value: dict
         """
-        self.upstream.payload = value
+        if not self.upstream:
+            self.upstream = APIRequestProxyUpstream()
+        try:
+            self.upstream.payload = value.get('data')
+            self.proxy_request = value['meta']['proxy_request']
+        except (KeyError, TypeError, AttributeError) as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     @property
-    def response_params(self) -> dict:
+    def enable_cache(self) -> bool:
         """
-        The base parameters to be passed into the Response object
+        True if request caching is enabled
 
-        :return: Response parameters
+        :return: True if request caching is enabled
+        :rtype: bool
+        """
+        return self._enable_cache
+
+    @enable_cache.setter
+    def enable_cache(self, value: bool) -> None:
+        """
+        True if request caching is enabled
+
+        :param value: enable_cache
+        :type value: bool
+        """
+        self._enable_cache = value if self.method in self.cacheable_methods else False
+
+    @property
+    def cache_age(self) -> int:
+        """
+        If request caching is being used, the time in seconds to
+        cache the object
+
+        :return: Request cache timer, in seconds
+        :rtype: int
+        """
+        return self._cache_age
+
+    @cache_age.setter
+    def cache_age(self, value: int) -> None:
+        """
+        If request caching is being used, the time in seconds to
+        cache the object
+
+        :param value: The time to cache the response
+        :type value: int
+        """
+        self._cache_age = value if value >= 0 else PROXY_DEFAULT_CACHE_AGE
+
+    @property
+    def proxy_request(self) -> dict:
+        """
+        A dictionary describing the upstream request to proxy
+
+
+        :return:
+        :rtype:
+        :return: Request to proxy
         :rtype: dict
         """
-        return {
-            'content_type': self.upstream.request.headers.get('Content-Type'),
-            'status':       self.upstream.request.status_code if self.status_passthrough else 200
-        }
+        return self._proxy_request
+
+    @proxy_request.setter
+    def proxy_request(self, value: dict) -> None:
+        """
+        A dictionary describing the upstream request to proxy
+
+        :param value: Request to proxy
+        :type value: dict
+        """
+        upstream_headers = {'Content-Type': request.content_type}
+
+        try:
+            if 'headers' in value:
+                upstream_headers.update(value['headers'])
+            self.headers = upstream_headers
+
+            self.method = value['method']
+            self.url = value['url']
+
+            self.enable_cache = value.get('enable_cache', False)
+            self.cache_age = value.get('cache_age', PROXY_DEFAULT_CACHE_AGE)
+
+            if value.get('invalidate_current_cache'):
+                self.initialize_cache()
+
+            self._proxy_request = value
+
+        except (KeyError, TypeError) as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
+
+    @property
+    def chunk_size(self) -> int:
+        """
+        When in streaming mode, the size of the generator buffer
+
+        :return: Streaming chunk size
+        :rtype: int
+        """
+        return self.proxy_request.get('chunk_size', PROXY_DEFAULT_CHUNK_SIZE)
+
+    @property
+    def status_passthrough(self) -> bool:
+        """
+        If True, instead of passing through HTTP status as received
+        from the upstream, we set the status code ourselves (only
+        applies to 2XX codes)
+
+        :return: True to set status, False to pass on the 'real' status
+        :rtype: bool
+        """
+        return not self.proxy_request.get('disable_status_passthrough')
+
+    def response_from_upstream(self) -> Response:
+        """
+        Open an upstream request and return the resulting Response
+
+        :return: Response from upstream
+        :rtype: Response
+        """
+        upstream_request = self.upstream.make_request()
+        try:
+            response = Response(
+                response=upstream_request.content,
+                content_type=upstream_request.headers.get('Content-Type'),
+                status=upstream_request.status_code if self.status_passthrough else 203,
+            )
+            return response
+        except HTTPException as e:
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
+
+    def response_from_cache(self) -> Response:
+        """
+        Fetch the requested Response from cache, if valid, otherwise
+        fall back to making an upstream request
+
+        :return: Response from upstream
+        :rtype: Response
+        """
+        try:
+            if time.time() < self.proxy_request_cache[self.method][self.url]['expire']:
+                response = deepcopy(self.proxy_request_cache[self.method][self.url]['response'])
+                response.status_code = 203
+            else:
+                raise CacheMiss('Object not in cache or cache expired')
+        except (KeyError, CacheMiss):
+            response = self.response_from_upstream()
+            if response.status_code in (200, 201, 202, 204):
+                self.proxy_request_cache[self.method][self.url] = {
+                    'response': response,
+                    'expire':   time.time() + self.cache_age,
+                }
+        return response
 
     def make_response(self) -> None:
         """
         Create a response out of the results from the upstream
         request
         """
-        try:
-            self.upstream.make_request()
-            content = dict(response=self.upstream.request.content)
-            self.response = Response(**content, **self.response_params)
-        except HTTPException as e:
-            raise APIRequestProxyError('Proxy Error') from e
+        if self.enable_cache is True:
+            self.response = self.response_from_cache()
+        else:
+            self.response = self.response_from_upstream()
 
     def stream_response(self) -> Response:
         """
@@ -207,11 +434,14 @@ class APIRequestProxy:
         :rtype: Response
         """
         try:
-            self.upstream.make_request(stream=True)
-            content = dict(response=self.upstream.request.iter_content(chunk_size=16384))
-            return Response(**content, **self.response_params)
+            upstream_request = self.upstream.make_request(stream=True)
+            return Response(
+                response=upstream_request.iter_content(chunk_size=self.chunk_size),
+                content_type=upstream_request.headers.get('Content-Type'),
+                status=upstream_request.status_code if self.status_passthrough else 203,
+            )
         except HTTPException as e:
-            raise APIRequestProxyError('Proxy Error') from e
+            raise APIRequestProxyError('Proxy Error: {}'.format(str(e))) from e
 
     def __str__(self) -> str:
         return self.__class__.__name__
@@ -221,9 +451,10 @@ class APIRequestProxy:
 
 @app.route('/proxy/', methods=['POST'])
 def flask_restful_proxy():
-    proxy_request = request.json.get('proxy_request')
-    proxy = APIRequestProxy(proxy_request=proxy_request)
-    return proxy.stream_response()
+    proxy = APIRequestProxy()
+    proxy.payload = request.json
+    proxy.make_response()
+    return proxy.response
 
 
 if __name__ == '__main__':
