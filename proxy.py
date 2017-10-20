@@ -23,21 +23,24 @@ from collections import defaultdict
 from copy import deepcopy
 from time import time
 
-from flask import Flask, Response, request
+from flask import Flask, request, Response
 from werkzeug.exceptions import HTTPException
 
 
-PROXY_DEFAULT_CACHE_AGE = 5
-PROXY_DEFAULT_CHUNK_SIZE = 16384
-CACHEABLE_METHODS = frozenset(('HEAD', 'GET'))
-CACHEABLE_STATUS_CODES = frozenset((200, 201, 202, 204))
+PROXY_CHUNK_SIZE = 16384
+PROXY_METHODS = frozenset(('DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'))
+PROXY_CACHE_AGE = 5
+PROXY_CACHE_METHODS = frozenset(('GET', 'HEAD'))
+PROXY_CACHE_STATUS_CODES = frozenset((200, 201, 202, 204))
 
 
 app = Flask(__name__)
 
 
 class APIRequestProxyError(Exception):
-    """Exception class for Proxy Errors"""
+    """
+    Proxy Error
+    """
     pass
 
 
@@ -59,7 +62,6 @@ class APIRequestProxyUpstream:
         self.url = None
         self.headers = {}
         self.payload = None
-        self.request_method = None
 
     @property
     def method(self) -> str:
@@ -74,25 +76,15 @@ class APIRequestProxyUpstream:
     @method.setter
     def method(self, value: str) -> None:
         """
-        Map the HTTP request method to the appropriate object
+        The HTTP request method for the upstream request
 
-        :param value: The HTTP request method
+        :param value: HTTP request method
         :type value: str
         """
-        request_methods = {
-            'DELETE':   requests.delete,
-            'GET':      requests.get,
-            'HEAD':     requests.head,
-            'OPTIONS':  requests.options,
-            'PATCH':    requests.patch,
-            'POST':     requests.post,
-            'PUT':      requests.put,
-        }
-        try:
-            self.request_method = request_methods[value]
-            self._method = value
-        except KeyError:
-            raise APIRequestProxyError('Unsupported Method {}'.format(self.request_method))
+        if value not in PROXY_METHODS:
+            raise APIRequestProxyError('Method not supported by proxy: {}'.format(value))
+
+        self._method = value
 
     def make_request(self, stream=False) -> requests.Response:
         """
@@ -104,7 +96,8 @@ class APIRequestProxyUpstream:
         :rtype: requests.Response
         """
         try:
-            return self.request_method(
+            return requests.request(
+                method=self.method,
                 url=self.url,
                 json=self.payload,
                 stream=stream,
@@ -283,7 +276,7 @@ class APIRequestProxy:
         :param value: enable_cache
         :type value: bool
         """
-        self._enable_cache = value if self.method in CACHEABLE_METHODS else False
+        self._enable_cache = value if self.method in PROXY_CACHE_METHODS else False
 
     @property
     def cache_age(self) -> int:
@@ -305,7 +298,7 @@ class APIRequestProxy:
         :param value: The time to cache the response
         :type value: int
         """
-        self._cache_age = value if value >= 0 else PROXY_DEFAULT_CACHE_AGE
+        self._cache_age = value if value >= 0 else PROXY_CACHE_AGE
 
     @property
     def proxy_request(self) -> dict:
@@ -333,9 +326,9 @@ class APIRequestProxy:
 
             self.headers = value.get('headers', {})
             self.enable_cache = value.get('enable_cache', False)
-            self.cache_age = value.get('cache_age', PROXY_DEFAULT_CACHE_AGE)
+            self.cache_age = value.get('cache_age', PROXY_CACHE_AGE)
 
-            if value.get('initialize_cache'):
+            if value.get('initialize_cache') is True:
                 self.initialize_cache()
 
             self._proxy_request = value
@@ -351,7 +344,7 @@ class APIRequestProxy:
         :return: Streaming chunk size
         :rtype: int
         """
-        return self.proxy_request.get('chunk_size', PROXY_DEFAULT_CHUNK_SIZE)
+        return self.proxy_request.get('chunk_size', PROXY_CHUNK_SIZE)
 
     @property
     def status_passthrough(self) -> bool:
@@ -400,7 +393,7 @@ class APIRequestProxy:
                 raise CacheMiss('Object expired from cache')
         except (KeyError, CacheMiss):
             response = self.response_from_upstream()
-            if response.status_code in CACHEABLE_STATUS_CODES:
+            if response.status_code in PROXY_CACHE_STATUS_CODES:
                 self.proxy_request_cache[self.method][self.url] = {
                     'response': response,
                     'expire':   time() + self.cache_age,

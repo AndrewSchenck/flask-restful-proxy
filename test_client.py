@@ -1,7 +1,7 @@
 import json
 
 from bs4 import BeautifulSoup
-from proxy import app
+from wut import app
 
 
 if __name__ == '__main__':
