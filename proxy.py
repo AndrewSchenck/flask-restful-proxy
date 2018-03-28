@@ -124,17 +124,6 @@ class APIRequestProxy:
     proxy_request_cache = None
     upstream = None
 
-    def __new__(cls, *args, **kwargs):
-        """
-        Initialize the cache dictionary and the upstream response
-        object upon first instantiation
-        """
-        if not cls.proxy_request_cache:
-            cls.initialize_cache()
-        if not cls.upstream:
-            cls.upstream = APIRequestProxyUpstream()
-        return super().__new__(cls)
-
     @classmethod
     def initialize_cache(cls) -> None:
         """
@@ -148,6 +137,8 @@ class APIRequestProxy:
         self._cache_age = None
         self._proxy_request = None
         self.headers = {'Content-Type': request.content_type}
+        
+        self.initialize_cache()
 
     @property
     def headers(self) -> dict:
